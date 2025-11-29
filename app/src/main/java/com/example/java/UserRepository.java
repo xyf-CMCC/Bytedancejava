@@ -1,88 +1,179 @@
 package com.example.java;
 
 import android.content.Context;
-import android.content.res.Resources;
-import android.os.SystemClock;
+import androidx.room.Room;
 
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
+import com.example.java.db.AppDatabase;
+import com.example.java.db.UserDao;
+import com.example.java.db.UserEntity;
+import com.example.java.network.MockService;
 
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
-import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
-import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
-import java.util.Random;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 
 public class UserRepository {
-    private final File storeFile;
-    private final java.util.concurrent.Executor executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private static UserRepository INSTANCE;
+    private final UserDao userDao;
+    private final MockService mockService;
+    private final ExecutorService executor;
 
-    public UserRepository(Context ctx) {
-        this.storeFile = new File(ctx.getFilesDir(), "users.json");
+    private UserRepository(Context context) {
+        AppDatabase db = Room.databaseBuilder(context.getApplicationContext(), AppDatabase.class, "app_db")
+                .fallbackToDestructiveMigration()
+                .build();
+        this.userDao = db.userDao();
+        this.mockService = new MockService();
+        this.executor = Executors.newSingleThreadExecutor();
     }
 
-    public List<User> load(Context ctx) {
-        if (!storeFile.exists()) return ensureInitialData(ctx);
-        try {
-            BufferedReader r = new BufferedReader(new FileReader(storeFile));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = r.readLine()) != null) sb.append(line);
-            r.close();
-            JSONArray arr = new JSONArray(sb.toString());
-            List<User> list = new ArrayList<>();
-            for (int i = 0; i < arr.length(); i++) list.add(User.fromJson(arr.getJSONObject(i)));
-            return list;
-        } catch (IOException | JSONException e) {
-            return ensureInitialData(ctx);
+    public static synchronized UserRepository getInstance(Context context) {
+        if (INSTANCE == null) {
+            INSTANCE = new UserRepository(context);
         }
+        return INSTANCE;
     }
 
-    public void saveAll(List<User> users) {
-        try {
-            JSONArray arr = new JSONArray();
-            for (User u : users) arr.put(u.toJson());
-            BufferedWriter w = new BufferedWriter(new FileWriter(storeFile, false));
-            w.write(arr.toString());
-            w.flush();
-            w.close();
-        } catch (IOException | JSONException ignored) {
-        }
+    public void loadMoreUsers(int currentCount, int limit, Consumer<Boolean> callback) {
+        executor.execute(() -> {
+            try {
+                List<User> networkUsers = mockService.getUsers(currentCount, limit);
+                if (!networkUsers.isEmpty()) {
+                    List<UserEntity> entities = new ArrayList<>();
+                    for (int i = 0; i < networkUsers.size(); i++) {
+                        User u = networkUsers.get(i);
+                        int orderIndex = currentCount + i;
+                        com.example.java.db.UserEntity existing = userDao.findById(u.getId());
+                        boolean special = existing != null ? existing.special : u.isSpecial();
+                        boolean followed = existing != null ? existing.followed : u.isFollowed();
+                        String remark = existing != null ? existing.remark : u.getRemark();
+                        User merged = new User(u.getId(), u.getName(), remark, special, followed, u.getAvatarRes(), u.getAvatarUrl(), u.getFollowTime());
+                        entities.add(toEntity(merged, orderIndex));
+                    }
+                    userDao.insertAll(entities);
+                }
+                if (callback != null) callback.accept(!networkUsers.isEmpty());
+            } catch (Exception e) {
+                if (callback != null) callback.accept(false);
+            }
+        });
     }
 
-    public void saveAllAsync(List<User> users) {
-        executor.execute(() -> saveAll(users));
+    public void refreshUsers(int limit, Consumer<Boolean> callback) {
+        executor.execute(() -> {
+            try {
+                List<com.example.java.db.UserEntity> existingAll = userDao.getAllUsers();
+                java.util.HashMap<Long, com.example.java.db.UserEntity> map = new java.util.HashMap<>();
+                for (com.example.java.db.UserEntity e : existingAll) map.put(e.id, e);
+                List<User> networkUsers = mockService.getUsers(0, limit);
+                if (!networkUsers.isEmpty()) {
+                    List<UserEntity> entities = new ArrayList<>();
+                    for (int i = 0; i < networkUsers.size(); i++) {
+                        User u = networkUsers.get(i);
+                        com.example.java.db.UserEntity existing = map.get(u.getId());
+                        boolean special = existing != null ? existing.special : u.isSpecial();
+                        boolean followed = existing != null ? existing.followed : u.isFollowed();
+                        String remark = existing != null ? existing.remark : u.getRemark();
+                        User merged = new User(u.getId(), u.getName(), remark, special, followed, u.getAvatarRes(), u.getAvatarUrl(), u.getFollowTime());
+                        entities.add(toEntity(merged, i));
+                    }
+                    userDao.clearAll();
+                    userDao.insertAll(entities);
+                }
+                if (callback != null) callback.accept(!networkUsers.isEmpty());
+            } catch (Exception e) {
+                if (callback != null) callback.accept(false);
+            }
+        });
     }
 
-    private List<User> ensureInitialData(Context ctx) {
-        List<User> seed = generateSeed(ctx.getResources());
-        saveAll(seed);
-        return seed;
+    public void syncLoadedUsers(int currentCount, Consumer<Boolean> callback) {
+        executor.execute(() -> {
+            try {
+                int pageSize = 10;
+                List<UserEntity> toUpdate = new ArrayList<>();
+                for (int offset = 0; offset < currentCount; offset += pageSize) {
+                    int size = Math.min(pageSize, currentCount - offset);
+                    List<User> networkUsers = mockService.getUsers(offset, size);
+                    for (int i = 0; i < networkUsers.size(); i++) {
+                        User u = networkUsers.get(i);
+                        com.example.java.db.UserEntity existing = userDao.findById(u.getId());
+                        int orderIndex = existing != null ? existing.orderIndex : offset + i;
+                        boolean special = existing != null ? existing.special : u.isSpecial();
+                        boolean followed = existing != null ? existing.followed : u.isFollowed();
+                        String remark = existing != null ? existing.remark : u.getRemark();
+                        User merged = new User(u.getId(), u.getName(), remark, special, followed, u.getAvatarRes(), u.getAvatarUrl(), u.getFollowTime());
+                        toUpdate.add(toEntity(merged, orderIndex));
+                    }
+                }
+                if (!toUpdate.isEmpty()) userDao.insertAll(toUpdate);
+                if (callback != null) callback.accept(true);
+            } catch (Exception e) {
+                if (callback != null) callback.accept(false);
+            }
+        });
     }
 
-    private List<User> generateSeed(Resources res) {
-        List<User> list = new ArrayList<>();
-        String[] names = new String[]{"王一", "李二", "张三", "赵四", "周五", "吴六", "郑七", "冯八", "陈九", "褚十", "sunny", "momo", "kira", "nova", "zero", "alpha", "beta", "gamma"};
-        int[] avatars = new int[]{res.getIdentifier("ic_launcher", "mipmap", "com.example.java"), res.getIdentifier("ic_launcher_round", "mipmap", "com.example.java")};
-        Random rnd = new Random(7);
-        long base = System.currentTimeMillis() - 86400000L * 30;
-        for (int i = 0; i < 50; i++) {
-            long id = i + 1;
-            String name = names[i % names.length] + i;
-            String remark = i % 7 == 0 ? "同事" : "";
-            boolean special = i % 9 == 0;
-            int avatar = avatars[i % avatars.length];
-            long followTime = base + (long) rnd.nextInt(30 * 24 * 60 * 60) * 1000L;
-            list.add(new User(id, name, remark, special, avatar, followTime));
-        }
-        Collections.shuffle(list, rnd);
-        SystemClock.sleep(50);
-        return list;
+    public void getAllUsers(Consumer<List<User>> callback) {
+        executor.execute(() -> {
+            List<UserEntity> entities = userDao.getAllUsers();
+            List<User> users = new ArrayList<>();
+            for (UserEntity e : entities) {
+                users.add(toUser(e));
+            }
+            callback.accept(users);
+        });
+    }
+
+    public void updateFollowStatus(User user) {
+        executor.execute(() -> {
+            userDao.updateFollowStatus(user.getId(), user.isFollowed());
+            mockService.updateUserState(user.getId(), null, user.isFollowed(), null);
+        });
+    }
+    
+    public void updateUser(User user) {
+        executor.execute(() -> {
+            com.example.java.db.UserEntity existing = userDao.findById(user.getId());
+            int orderIndex = existing != null ? existing.orderIndex : 0;
+            userDao.update(toEntity(user, orderIndex));
+            mockService.updateUserState(user.getId(), user.isSpecial(), user.isFollowed(), user.getRemark());
+        });
+    }
+
+    public void updateFollowStatus(User user, Runnable onDone) {
+        executor.execute(() -> {
+            userDao.updateFollowStatus(user.getId(), user.isFollowed());
+            mockService.updateUserState(user.getId(), null, user.isFollowed(), null);
+            if (onDone != null) onDone.run();
+        });
+    }
+
+    public void updateUser(User user, Runnable onDone) {
+        executor.execute(() -> {
+            com.example.java.db.UserEntity existing = userDao.findById(user.getId());
+            int orderIndex = existing != null ? existing.orderIndex : 0;
+            userDao.update(toEntity(user, orderIndex));
+            mockService.updateUserState(user.getId(), user.isSpecial(), user.isFollowed(), user.getRemark());
+            if (onDone != null) onDone.run();
+        });
+    }
+
+    public void updateSpecialStatus(User user, Runnable onDone) {
+        executor.execute(() -> {
+            userDao.updateSpecialStatus(user.getId(), user.isSpecial());
+            mockService.updateUserState(user.getId(), user.isSpecial(), null, null);
+            if (onDone != null) onDone.run();
+        });
+    }
+
+    private UserEntity toEntity(User u, int orderIndex) {
+        return new UserEntity(u.getId(), u.getName(), u.getRemark(), u.isSpecial(), u.isFollowed(), u.getAvatarRes(), u.getAvatarUrl(), u.getFollowTime(), orderIndex);
+    }
+
+    private User toUser(UserEntity e) {
+        return new User(e.id, e.name, e.remark, e.special, e.followed, e.avatarRes, e.avatarUrl, e.followTime);
     }
 }

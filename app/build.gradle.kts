@@ -31,6 +31,9 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    buildFeatures {
+        viewBinding = true
+    }
 }
 
 dependencies {
@@ -43,4 +46,13 @@ dependencies {
     testImplementation(libs.junit)
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)
+    implementation(libs.room.runtime)
+    annotationProcessor(libs.room.compiler)
+    implementation(libs.glide)
+    implementation("com.github.bumptech.glide:okhttp3-integration:4.16.0")
+    annotationProcessor(libs.glide.compiler)
+    implementation(libs.lifecycle.viewmodel)
+    implementation(libs.lifecycle.livedata)
+    debugImplementation("com.squareup.leakcanary:leakcanary-android:2.12")
+    implementation("com.github.bumptech.glide:recyclerview-integration:4.16.0")
 }

@@ -14,6 +14,8 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.bottomsheet.BottomSheetDialog;
 import com.google.android.material.switchmaterial.SwitchMaterial;
+import com.example.java.databinding.ItemUserBinding;
+import com.example.java.databinding.DialogUserActionsBinding;
 
 import java.util.function.Consumer;
 
@@ -27,44 +29,72 @@ public class UsersAdapter extends ListAdapter<User, UsersAdapter.VH> {
 
     private final Listener listener;
 
+    private final StringBuilder sb = new StringBuilder(64);
+
     public UsersAdapter(Listener l) {
         super(DIFF);
         setHasStableIds(true);
         this.listener = l;
     }
 
+    public User getItemAt(int position) {
+        return getItem(position);
+    }
+
     @Override public long getItemId(int position) { return getItem(position).getId(); }
 
     @NonNull @Override public VH onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
-        View v = LayoutInflater.from(parent.getContext()).inflate(R.layout.item_user, parent, false);
-        return new VH(v);
+        ItemUserBinding b = ItemUserBinding.inflate(LayoutInflater.from(parent.getContext()), parent, false);
+        return new VH(b);
     }
 
     @Override public void onBindViewHolder(@NonNull VH h, int pos) {
         User u = getItem(pos);
-        h.avatar.setImageResource(u.getAvatarRes());
+        if (u.getAvatarUrl() != null && !u.getAvatarUrl().isEmpty()) {
+            String fallback = "https://robohash.org/" + u.getId() + ".png?size=80x80&set=set3";
+            com.bumptech.glide.Glide.with(h.binding.avatar)
+                    .load(u.getAvatarUrl())
+                    .override(80, 80)
+                    .thumbnail(0.25f)
+                    .placeholder(R.mipmap.ic_launcher_round)
+                    .transition(com.bumptech.glide.load.resource.drawable.DrawableTransitionOptions.withCrossFade(80))
+                    .diskCacheStrategy(com.bumptech.glide.load.engine.DiskCacheStrategy.AUTOMATIC)
+                    .circleCrop()
+                    .error(
+                            com.bumptech.glide.Glide.with(h.binding.avatar)
+                                    .load(fallback)
+                                    .override(80, 80)
+                                    .diskCacheStrategy(com.bumptech.glide.load.engine.DiskCacheStrategy.AUTOMATIC)
+                                    .circleCrop()
+                    )
+                    .into(h.binding.avatar);
+        } else {
+            h.binding.avatar.setImageResource(u.getAvatarRes() != 0 ? u.getAvatarRes() : R.mipmap.ic_launcher_round);
+        }
+        sb.setLength(0);
         String displayName = u.getRemark().isEmpty() ? u.getName() : u.getRemark();
-        h.name.setText(displayName);
-        TextView chip = h.itemView.findViewById(R.id.chip_special);
-        chip.setVisibility(u.isSpecial() ? View.VISIBLE : View.GONE);
-        applyFollowStyle(h.status, u.isFollowed());
-        h.status.setOnClickListener(v -> {
+        h.binding.name.setText(displayName);
+        h.binding.chipSpecial.setVisibility(u.isSpecial() ? View.VISIBLE : View.GONE);
+        applyFollowStyle(h.binding.status, u.isFollowed());
+        h.binding.status.setOnClickListener(v -> {
             boolean nf = !u.isFollowed();
             u.setFollowed(nf);
-            applyFollowStyle(h.status, nf);
+            applyFollowStyle(h.binding.status, nf);
             listener.onToggleFollow(u, h.getBindingAdapterPosition());
         });
-        h.avatar.setOnClickListener(v -> android.widget.Toast.makeText(v.getContext(), "已选中（" + displayName + "）", android.widget.Toast.LENGTH_SHORT).show());
-        h.more.setOnClickListener(v -> showMenu(v, u, h.getBindingAdapterPosition()));
+        sb.append("已选中（").append(displayName).append("）");
+        String msg = sb.toString();
+        h.binding.avatar.setOnClickListener(v -> android.widget.Toast.makeText(v.getContext(), msg, android.widget.Toast.LENGTH_SHORT).show());
+        h.binding.more.setOnClickListener(v -> showMenu(v, u, h.getBindingAdapterPosition()));
     }
 
     private void showMenu(View anchor, User u, int position) {
         BottomSheetDialog d = new BottomSheetDialog(anchor.getContext());
-        View sheet = LayoutInflater.from(anchor.getContext()).inflate(R.layout.dialog_user_actions, null);
-        d.setContentView(sheet);
-        TextView title = sheet.findViewById(R.id.title);
-        TextView subtitleName = sheet.findViewById(R.id.subtitle_name);
-        TextView subtitleId = sheet.findViewById(R.id.subtitle_id);
+        DialogUserActionsBinding b = DialogUserActionsBinding.inflate(LayoutInflater.from(anchor.getContext()));
+        d.setContentView(b.getRoot());
+        TextView title = b.title;
+        TextView subtitleName = b.subtitleName;
+        TextView subtitleId = b.subtitleId;
         if (u.getRemark().isEmpty()) {
             title.setText(u.getName());
             subtitleName.setVisibility(View.GONE);
@@ -73,13 +103,13 @@ public class UsersAdapter extends ListAdapter<User, UsersAdapter.VH> {
             subtitleName.setVisibility(View.VISIBLE);
             subtitleName.setText("名字：" + u.getName());
         }
-        SwitchMaterial sw = sheet.findViewById(R.id.switch_special);
+        SwitchMaterial sw = b.switchSpecial;
         sw.setChecked(u.isSpecial());
         sw.setOnCheckedChangeListener((btn, checked) -> {
             u.setSpecial(checked);
             listener.onToggleSpecial(u, position);
         });
-        sheet.findViewById(R.id.row_remark).setOnClickListener(v -> {
+        b.rowRemark.setOnClickListener(v -> {
             android.widget.EditText et = new android.widget.EditText(v.getContext());
             et.setText(u.getRemark());
             new com.google.android.material.dialog.MaterialAlertDialogBuilder(v.getContext())
@@ -100,8 +130,8 @@ public class UsersAdapter extends ListAdapter<User, UsersAdapter.VH> {
                     .setNegativeButton("取消", (dlg, w) -> {})
                     .show();
         });
-        sheet.findViewById(R.id.btn_unfollow).setOnClickListener(v -> { d.dismiss(); listener.onUnfollow(u, position); });
-        sheet.findViewById(R.id.btn_close).setOnClickListener(v -> d.dismiss());
+        b.btnUnfollow.setOnClickListener(v -> { d.dismiss(); listener.onUnfollow(u, position); });
+        b.btnClose.setOnClickListener(v -> d.dismiss());
         d.show();
     }
 
@@ -120,21 +150,17 @@ public class UsersAdapter extends ListAdapter<User, UsersAdapter.VH> {
     static final DiffUtil.ItemCallback<User> DIFF = new DiffUtil.ItemCallback<User>() {
         @Override public boolean areItemsTheSame(@NonNull User a, @NonNull User b) { return a.getId() == b.getId(); }
         @Override public boolean areContentsTheSame(@NonNull User a, @NonNull User b) {
-            return a.getName().equals(b.getName()) && a.getRemark().equals(b.getRemark()) && a.isSpecial() == b.isSpecial() && a.isFollowed() == b.isFollowed() && a.getAvatarRes() == b.getAvatarRes() && a.getFollowTime() == b.getFollowTime();
+            String au = a.getAvatarUrl() == null ? "" : a.getAvatarUrl();
+            String bu = b.getAvatarUrl() == null ? "" : b.getAvatarUrl();
+            return a.getName().equals(b.getName()) && a.getRemark().equals(b.getRemark()) && a.isSpecial() == b.isSpecial() && a.isFollowed() == b.isFollowed() && a.getAvatarRes() == b.getAvatarRes() && a.getFollowTime() == b.getFollowTime() && au.equals(bu);
         }
     };
 
     static class VH extends RecyclerView.ViewHolder {
-        ImageView avatar;
-        TextView name;
-        TextView status;
-        ImageButton more;
-        VH(@NonNull View v) {
-            super(v);
-            avatar = v.findViewById(R.id.avatar);
-            name = v.findViewById(R.id.name);
-            status = v.findViewById(R.id.status);
-            more = v.findViewById(R.id.more);
+        final ItemUserBinding binding;
+        VH(@NonNull ItemUserBinding b) {
+            super(b.getRoot());
+            this.binding = b;
         }
     }
 }
